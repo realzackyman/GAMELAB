@@ -63,6 +63,35 @@
   .row{display:flex;gap:10px}
 
   .stage{position:relative}
+
+  /* TOUCH CONTROLS */
+  #touch{
+    display:none; width:100%; max-width:880px;
+    justify-content:space-between; align-items:center;
+    gap:12px; margin-top:6px; user-select:none; -webkit-user-select:none;
+    touch-action:none;
+  }
+  .dpad{
+    display:grid; grid-template-columns:repeat(3,56px); grid-template-rows:repeat(3,56px);
+    gap:4px;
+  }
+  .dpad .tbtn{grid-column:auto;grid-row:auto}
+  .dpad .blank{visibility:hidden}
+  .tbtn{
+    background:#0a0a0a;border:1px solid #333;color:#fff;
+    display:flex;align-items:center;justify-content:center;
+    font-size:20px;letter-spacing:2px;border-radius:8px;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .tbtn.act{
+    width:110px;height:110px;border-radius:55px;font-size:14px;
+    border-color:var(--neon1);color:var(--neon1);
+  }
+  .tbtn.hot{background:#222;border-color:#fff}
+  @media (hover:none) and (pointer:coarse){
+    #touch{display:flex}
+  }
+  body.touch #touch{display:flex}
 </style>
 </head>
 <body>
@@ -128,6 +157,20 @@
       </div>
     </div>
     <div class="instr" id="gameInstr">INSTRUCTIONS</div>
+    <div id="touch">
+      <div class="dpad">
+        <div class="blank"></div>
+        <div class="tbtn" data-key="ArrowUp">▲</div>
+        <div class="blank"></div>
+        <div class="tbtn" data-key="ArrowLeft">◀</div>
+        <div class="blank"></div>
+        <div class="tbtn" data-key="ArrowRight">▶</div>
+        <div class="blank"></div>
+        <div class="tbtn" data-key="ArrowDown">▼</div>
+        <div class="blank"></div>
+      </div>
+      <div class="tbtn act" data-key="Space">SPACE</div>
+    </div>
   </section>
 
 </div>
@@ -170,6 +213,21 @@ addEventListener('keyup', e => { keys[e.code] = false; });
 function consumeKey(code){
   const v = justPressed[code]; justPressed[code] = false; return v;
 }
+
+/* Touch controls: bind D-pad + action to same keys[] map. */
+if ('ontouchstart' in window || navigator.maxTouchPoints > 0) document.body.classList.add('touch');
+document.querySelectorAll('.tbtn').forEach(btn=>{
+  const code = btn.dataset.key;
+  if (!code) return;
+  const press = e => { e.preventDefault(); if (!keys[code]) justPressed[code] = true; keys[code] = true; btn.classList.add('hot'); };
+  const release = e => { e.preventDefault(); keys[code] = false; btn.classList.remove('hot'); };
+  btn.addEventListener('touchstart', press, {passive:false});
+  btn.addEventListener('touchend', release, {passive:false});
+  btn.addEventListener('touchcancel', release, {passive:false});
+  btn.addEventListener('mousedown', press);
+  btn.addEventListener('mouseup', release);
+  btn.addEventListener('mouseleave', release);
+});
 
 /* ---------- Helpers ---------- */
 const rectHit = (a,b) => a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
