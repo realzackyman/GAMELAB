@@ -33,6 +33,7 @@
   .c2 .swatch{background:var(--neon2)}
   .c3 .swatch{background:var(--neon3)}
   .c4 .swatch{background:var(--neon4)}
+  .c5 .swatch{background:#0f8}
   .foot{margin-top:22px;text-align:center;color:#444;font-size:11px;letter-spacing:1px}
 
   /* GAME */
@@ -125,6 +126,12 @@
         <div class="num">04</div>
         <div class="ttl">REACTION HEIST</div>
         <div class="desc">Tiny stealth puzzles. Grab. Escape. Repeat.</div>
+      </div>
+      <div class="card c5" data-game="echo">
+        <div class="swatch"></div>
+        <div class="num">05</div>
+        <div class="ttl">ECHO CITY</div>
+        <div class="desc">Navigate blind. SPACE = sonar ping. Find the exit.</div>
       </div>
     </div>
     <div class="foot">PROTOTYPE BUILD // TESTING WHAT IS ACTUALLY FUN</div>
@@ -1250,12 +1257,148 @@ function makeHeist(){
   return game;
 }
 
+/* ===========================================================
+   GAME 5 — ECHO CITY
+   =========================================================== */
+function makeEchoCity(){
+  const P={x:0,y:0,r:8,speed:150};
+  let pings=[], echoes=[], pingCd=0;
+  let exitPos={x:0,y:0}, levelWalls=[];
+  const PING_SPEED=220, PING_CD=1.5, ECHO_LIFE=1.8, SAMPLE=12, EXIT_R=20;
+  const BORDER=[
+    {x:0,y:0,w:W,h:8},{x:0,y:H-8,w:W,h:8},
+    {x:0,y:0,w:8,h:H},{x:W-8,y:0,w:8,h:H}
+  ];
+  function allWalls(){ return [...BORDER,...levelWalls]; }
+  function wallPts(wall){
+    const pts=[],{x,y,w,h}=wall;
+    for(let i=x;i<=x+w;i+=SAMPLE){ pts.push({x:i,y:y}); pts.push({x:i,y:y+h}); }
+    for(let i=y;i<=y+h;i+=SAMPLE){ pts.push({x:x,y:i}); pts.push({x:x+w,y:i}); }
+    return pts;
+  }
+  function exitPts(){
+    const pts=[];
+    for(let a=0;a<Math.PI*2;a+=0.25) pts.push({x:exitPos.x+Math.cos(a)*EXIT_R,y:exitPos.y+Math.sin(a)*EXIT_R,exit:true});
+    return pts;
+  }
+  function moveP(dt){
+    let mx=0,my=0;
+    if(keys['ArrowLeft']||keys['KeyA']) mx-=1;
+    if(keys['ArrowRight']||keys['KeyD']) mx+=1;
+    if(keys['ArrowUp']||keys['KeyW']) my-=1;
+    if(keys['ArrowDown']||keys['KeyS']) my+=1;
+    if(mx||my){
+      const m=Math.hypot(mx,my);mx/=m;my/=m;
+      const nx=P.x+mx*P.speed*dt,ny=P.y+my*P.speed*dt;
+      const walls=allWalls(),pr=P.r;
+      const tryX={x:nx-pr,y:P.y-pr,w:pr*2,h:pr*2};
+      const tryY={x:P.x-pr,y:ny-pr,w:pr*2,h:pr*2};
+      let okX=true,okY=true;
+      for(const w of walls){ if(rectHit(tryX,w)) okX=false; if(rectHit(tryY,w)) okY=false; }
+      if(okX) P.x=nx;
+      if(okY) P.y=ny;
+    }
+    P.x=clamp(P.x,12,W-12);P.y=clamp(P.y,12,H-12);
+  }
+  function tickPings(dt){
+    const walls=allWalls();
+    for(let i=pings.length-1;i>=0;i--){
+      const pg=pings[i];
+      const pr=pg.r;
+      pg.r+=PING_SPEED*dt; pg.age+=dt;
+      for(const w of walls){
+        for(const pt of wallPts(w)){
+          const d=Math.hypot(pt.x-pg.x,pt.y-pg.y);
+          if(d>=pr&&d<pg.r) echoes.push({x:pt.x,y:pt.y,life:ECHO_LIFE,max:ECHO_LIFE});
+        }
+      }
+      for(const pt of exitPts()){
+        const d=Math.hypot(pt.x-pg.x,pt.y-pg.y);
+        if(d>=pr&&d<pg.r) echoes.push({x:pt.x,y:pt.y,life:ECHO_LIFE*2,max:ECHO_LIFE*2,exit:true});
+      }
+      if(pg.r>Math.hypot(W,H)) pings.splice(i,1);
+    }
+    for(let i=echoes.length-1;i>=0;i--){ echoes[i].life-=dt; if(echoes[i].life<=0) echoes.splice(i,1); }
+    pingCd=Math.max(0,pingCd-dt);
+  }
+  const LVLS=[
+    // L1: three walls, all gap at bottom — easy intro
+    {instr:'SPACE = PING. Walls echo. Find the green exit.',
+     start:{x:50,y:430},exit:{x:750,y:430},
+     walls:[{x:200,y:8,w:14,h:360},{x:400,y:8,w:14,h:360},{x:600,y:8,w:14,h:360}]},
+    // L2: three bottom gaps then one top gap, exit at top
+    {instr:'Follow the echo. The path zigzags.',
+     start:{x:50,y:430},exit:{x:750,y:50},
+     walls:[{x:180,y:8,w:14,h:360},{x:360,y:8,w:14,h:360},{x:540,y:8,w:14,h:360},{x:670,y:100,w:14,h:372}]},
+    // L3: alternating top/bottom gaps
+    {instr:'Maze tightens. Read every ping.',
+     start:{x:50,y:430},exit:{x:750,y:430},
+     walls:[{x:200,y:8,w:14,h:340},{x:400,y:140,w:14,h:332},{x:600,y:8,w:14,h:340}]},
+    // L4: five walls zigzag
+    {instr:'Dense corridors. Listen carefully.',
+     start:{x:50,y:430},exit:{x:750,y:430},
+     walls:[{x:140,y:8,w:14,h:300},{x:280,y:180,w:14,h:292},{x:420,y:8,w:14,h:300},{x:560,y:180,w:14,h:292},{x:700,y:8,w:14,h:300}]},
+    // L5: wall pairs create middle corridor, one solid wall forces detour
+    {instr:'Final echo. Find the way.',
+     start:{x:50,y:240},exit:{x:750,y:240},
+     walls:[
+       {x:150,y:8,w:14,h:192},{x:150,y:280,w:14,h:192},
+       {x:300,y:8,w:14,h:192},{x:300,y:280,w:14,h:192},
+       {x:450,y:8,w:14,h:302},
+       {x:600,y:8,w:14,h:192},{x:600,y:280,w:14,h:192},
+     ]},
+  ];
+  const game=new Game('ECHO CITY',LVLS.map(lv=>({
+    instr:lv.instr,
+    init(){
+      P.x=lv.start.x;P.y=lv.start.y;
+      exitPos={x:lv.exit.x,y:lv.exit.y};
+      levelWalls=lv.walls;
+      pings=[{x:P.x,y:P.y,r:0,age:0}]; // free reveal ping on start
+      echoes=[];pingCd=0;
+    },
+    update(g,dt){
+      moveP(dt);
+      if(consumeKey('Space')&&pingCd<=0){ pings.push({x:P.x,y:P.y,r:0,age:0}); pingCd=PING_CD; }
+      tickPings(dt);
+      if(dist(P,exitPos)<EXIT_R+P.r) g.win();
+    },
+    draw(){
+      for(const e of echoes){
+        const a=e.life/e.max;
+        if(e.exit){
+          ctx.fillStyle=`rgba(0,255,136,${a.toFixed(2)})`;
+          ctx.beginPath();ctx.arc(e.x,e.y,4,0,Math.PI*2);ctx.fill();
+        } else {
+          ctx.fillStyle=`rgba(0,180,255,${(a*0.75).toFixed(2)})`;
+          ctx.beginPath();ctx.arc(e.x,e.y,2,0,Math.PI*2);ctx.fill();
+        }
+      }
+      for(const pg of pings){
+        const a=Math.max(0,0.6-pg.r/500);
+        ctx.strokeStyle=`rgba(0,150,255,${a.toFixed(2)})`;
+        ctx.lineWidth=2;
+        ctx.beginPath();ctx.arc(pg.x,pg.y,pg.r,0,Math.PI*2);ctx.stroke();
+      }
+      ctx.fillStyle='rgba(0,255,255,0.18)';
+      ctx.beginPath();ctx.arc(P.x,P.y,P.r*2.5,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#0ff';
+      ctx.beginPath();ctx.arc(P.x,P.y,P.r,0,Math.PI*2);ctx.fill();
+      drawRect(W-110,40,80,3,'#111');
+      drawRect(W-110,40,pingCd<=0?80:80*(1-pingCd/PING_CD),3,pingCd<=0?'#0f8':'#0cf');
+      text(pingCd<=0?'PING READY':'PING',W-70,46,{align:'center',size:9,color:pingCd<=0?'#0f8':'#444'});
+    }
+  })));
+  return game;
+}
+
 /* ---------- Registry ---------- */
 const GAMES = {
   chaos: makeChaos,
   lies:  makeLies,
   boss:  makeBoss,
   heist: makeHeist,
+  echo:  makeEchoCity,
 };
 
 /* ---------- Init ---------- */
