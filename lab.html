@@ -39,7 +39,23 @@
   .c8 .swatch{background:#8f0}
   .c9 .swatch{background:#f08}
   .c10 .swatch{background:#08f}
-  .foot{margin-top:22px;text-align:center;color:#444;font-size:11px;letter-spacing:1px}
+  .c11 .swatch{background:#0fc}
+  .foot{margin-top:22px;
+  /* NAVAL COMMAND (Three.js) */
+  #gl-host{display:none;width:800px;height:480px;max-width:100%;position:relative;border:1px solid #222;background:#010105}
+  #gl-host.active{display:block}
+  #gl-host canvas{display:block;width:100%;height:auto}
+  #naval-hud{position:absolute;inset:0;pointer-events:none;font-size:11px;color:#0fc;letter-spacing:1px}
+  #naval-hud .nh-top{position:absolute;top:10px;left:12px;line-height:1.5}
+  #naval-hud .nh-radar{position:absolute;bottom:12px;right:12px;width:88px;height:88px;border:2px solid #0fc;border-radius:50%;background:rgba(0,20,10,.65);box-shadow:0 0 12px rgba(0,255,204,.35)}
+  #naval-hud .nh-sweep{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,rgba(0,255,204,.18) 0deg,transparent 90deg);animation:naval-sweep 3s linear infinite}
+  @keyframes naval-sweep{to{transform:rotate(360deg)}}
+  #naval-hud .blip{position:absolute;width:5px;height:5px;border-radius:50%;transform:translate(-50%,-50%)}
+  #naval-player-blip{left:50%;top:50%;background:#0f6;box-shadow:0 0 6px #0f6}
+  #naval-enemy-blip{background:#f33;box-shadow:0 0 6px #f33}
+  #naval-hud .nh-health{margin-top:6px;width:140px;height:10px;border:1px solid #0fc;background:rgba(0,30,30,.5)}
+  #naval-health{height:100%;width:100%;background:#0f6;transition:width .2s,background-color .3s}
+text-align:center;color:#444;font-size:11px;letter-spacing:1px}
 
   /* GAME */
   #game{display:flex;flex-direction:column;align-items:center;gap:10px}
@@ -168,6 +184,12 @@
         <div class="ttl">REFLEX CHAIN</div>
         <div class="desc">Hit numbered targets in order before they expire.</div>
       </div>
+      <div class="card c11" data-game="naval">
+        <div class="swatch"></div>
+        <div class="num">11</div>
+        <div class="ttl">TACTICAL NAVAL COMMAND</div>
+        <div class="desc">3D bridge view. Ballistic arcs, radar blips, enemy dreadnoughts.</div>
+      </div>
     </div>
     <div class="foot">PROTOTYPE BUILD // TESTING WHAT IS ACTUALLY FUN</div>
   </section>
@@ -186,6 +208,19 @@
     </div>
     <div class="stage">
       <canvas id="cv" width="800" height="480"></canvas>
+      <div id="gl-host" class="hidden" aria-hidden="true"></div>
+      <div id="naval-hud" class="hidden">
+        <div class="nh-top">
+          <div id="naval-score">SCORE: 0</div>
+          <div id="naval-status">SYS: ONLINE</div>
+          <div class="nh-health"><div id="naval-health"></div></div>
+        </div>
+        <div class="nh-radar">
+          <div class="nh-sweep"></div>
+          <div id="naval-player-blip" class="blip"></div>
+          <div id="naval-enemy-blip" class="blip"></div>
+        </div>
+      </div>
       <div id="overlay" class="overlay hidden">
         <h2 id="ovTitle">DONE</h2>
         <p id="ovText"></p>
@@ -295,6 +330,7 @@ function hide(el){ el.classList.add('hidden'); }
 
 function openMenu(){
   running = false;
+  if (current && current.dispose) current.dispose();
   current = null;
   hide(gameEl); show(menuEl);
   hideOverlay();
@@ -1797,6 +1833,8 @@ function makeReflexChain(){
 }
 
 /* ---------- Registry ---------- */
+window.__LAB = { Game, W, H, keys, consumeKey, cv, $ };
+
 const GAMES = {
   chaos: makeChaos,
   lies:  makeLies,
@@ -1812,6 +1850,11 @@ const GAMES = {
 
 /* ---------- Init ---------- */
 openMenu();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="games/naval-command.js"></script>
+<script>
+GAMES.naval = makeNavalCommand;
 </script>
 </body>
 </html>
