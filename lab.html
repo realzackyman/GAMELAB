@@ -39,6 +39,7 @@
   .c8 .swatch{background:#8f0}
   .c9 .swatch{background:#f08}
   .c10 .swatch{background:#08f}
+  .c11 .swatch{background:#fa0}
   .foot{margin-top:22px;text-align:center;color:#444;font-size:11px;letter-spacing:1px}
 
   /* GAME */
@@ -167,6 +168,12 @@
         <div class="num">10</div>
         <div class="ttl">REFLEX CHAIN</div>
         <div class="desc">Hit numbered targets in order before they expire.</div>
+      </div>
+      <div class="card c11" data-game="naval">
+        <div class="swatch"></div>
+        <div class="num">11</div>
+        <div class="ttl">TORPEDO RUN</div>
+        <div class="desc">Periscope view. Aim. Fire. Sink the fleet.</div>
       </div>
     </div>
     <div class="foot">PROTOTYPE BUILD // TESTING WHAT IS ACTUALLY FUN</div>
@@ -387,6 +394,7 @@ class Game {
     } else this.finish();
   }
   fail(reason='YOU DIED'){
+    screenShake(8,0.25);
     this.paused = true;
     showOverlay(reason, 'Lv ' + (this.level+1) + '. Try again.', [
       {label:'RETRY', fn:()=>{ this.start(this.level); hideOverlay(); }},
@@ -412,13 +420,17 @@ class Game {
   update(dt){
     if (this.paused) return;
     this.t += dt;
+    tickParticles(dt);
+    tickShake(dt);
     this.levels[this.level].update(this, dt);
   }
   draw(){
+    if(shakeT>0){ ctx.save(); ctx.translate((Math.random()*2-1)*shakeMag,(Math.random()*2-1)*shakeMag); }
     drawRect(0,0,W,H,'#000');
     this.levels[this.level].draw(this);
-    // HUD frame
+    drawParticles();
     strokeRect(0.5,0.5,W-1,H-1,'#222');
+    if(shakeT>0) ctx.restore();
   }
 }
 
@@ -1047,6 +1059,55 @@ function distToLine(px,py, x1,y1, x2,y2){
   return Math.hypot(px-xx, py-yy);
 }
 
+/* ---------- Shared FX ---------- */
+const PARTICLES = [];
+function spawnParticles(x,y,count,color,speed=180,life=0.6,size=3){
+  for(let i=0;i<count;i++){
+    const a=Math.random()*Math.PI*2;
+    const spd=speed*(0.5+Math.random());
+    PARTICLES.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life,maxLife:life,color,size});
+  }
+}
+function tickParticles(dt){
+  for(let i=PARTICLES.length-1;i>=0;i--){
+    const p=PARTICLES[i];
+    p.x+=p.vx*dt; p.y+=p.vy*dt;
+    p.vx*=0.92; p.vy*=0.92; p.life-=dt;
+    if(p.life<=0) PARTICLES.splice(i,1);
+  }
+}
+function drawParticles(){
+  for(const p of PARTICLES){
+    ctx.globalAlpha=p.life/p.maxLife;
+    ctx.fillStyle=p.color;
+    ctx.fillRect(p.x-p.size/2,p.y-p.size/2,p.size,p.size);
+  }
+  ctx.globalAlpha=1;
+}
+let shakeT=0,shakeMag=0;
+function screenShake(mag=8,dur=0.25){ shakeMag=mag; shakeT=dur; }
+function tickShake(dt){ shakeT=Math.max(0,shakeT-dt); }
+const FOV3D=400;
+function project3D(wx,wy,wz){
+  const scale=FOV3D/Math.max(wz,0.1);
+  return {sx:W/2+wx*scale, sy:H/2+wy*scale, scale};
+}
+function glowCircle(x,y,r,color,glowR){
+  glowR=glowR||r*2.5;
+  const g=ctx.createRadialGradient(x,y,0,x,y,glowR);
+  g.addColorStop(0,color); g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g;
+  ctx.beginPath();ctx.arc(x,y,glowR,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle=color;
+  ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+}
+function glowLine(x1,y1,x2,y2,color,w=3,blur=8){
+  ctx.shadowColor=color; ctx.shadowBlur=blur;
+  ctx.strokeStyle=color; ctx.lineWidth=w;
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  ctx.shadowBlur=0;
+}
+
 /* ===========================================================
    GAME 4 — REACTION HEIST
    =========================================================== */
@@ -1293,89 +1354,177 @@ function makeHeist(){
 }
 
 /* ===========================================================
-   GAME 5 — ECHO CITY
+   GAME 5 — ECHO CITY  (Wolfenstein-style raycaster)
    =========================================================== */
 function makeEchoCity(){
-  const P={x:0,y:0,r:8,speed:150};
+  const EC_RAY_COUNT=160, EC_FOV=Math.PI/2.5;
+  const EC_HALF_FOV=EC_FOV/2;
+  const EC_STEP=0.02, EC_MAX_DIST=800;
+  const PING_CD=1.4, ECHO_LIFE=2.2, PING_SPEED=260;
+  const P={x:0,y:0,angle:0,r:8,speed:150,turnSpeed:2.2};
   let pings=[], echoes=[], pingCd=0;
   let exitPos={x:0,y:0}, levelWalls=[];
-  const PING_SPEED=220, PING_CD=1.5, ECHO_LIFE=1.8, SAMPLE=12, EXIT_R=20;
-  const BORDER=[
-    {x:0,y:0,w:W,h:8},{x:0,y:H-8,w:W,h:8},
-    {x:0,y:0,w:8,h:H},{x:W-8,y:0,w:8,h:H}
-  ];
-  function allWalls(){ return [...BORDER,...levelWalls]; }
-  function wallPts(wall){
-    const pts=[],{x,y,w,h}=wall;
-    for(let i=x;i<=x+w;i+=SAMPLE){ pts.push({x:i,y:y}); pts.push({x:i,y:y+h}); }
-    for(let i=y;i<=y+h;i+=SAMPLE){ pts.push({x:x,y:i}); pts.push({x:x+w,y:i}); }
-    return pts;
-  }
-  function exitPts(){
-    const pts=[];
-    for(let a=0;a<Math.PI*2;a+=0.25) pts.push({x:exitPos.x+Math.cos(a)*EXIT_R,y:exitPos.y+Math.sin(a)*EXIT_R,exit:true});
-    return pts;
-  }
-  function moveP(dt){
-    let mx=0,my=0;
-    if(keys['ArrowLeft']||keys['KeyA']) mx-=1;
-    if(keys['ArrowRight']||keys['KeyD']) mx+=1;
-    if(keys['ArrowUp']||keys['KeyW']) my-=1;
-    if(keys['ArrowDown']||keys['KeyS']) my+=1;
-    if(mx||my){
-      const m=Math.hypot(mx,my);mx/=m;my/=m;
-      const nx=P.x+mx*P.speed*dt,ny=P.y+my*P.speed*dt;
-      const walls=allWalls(),pr=P.r;
-      const tryX={x:nx-pr,y:P.y-pr,w:pr*2,h:pr*2};
-      const tryY={x:P.x-pr,y:ny-pr,w:pr*2,h:pr*2};
-      let okX=true,okY=true;
-      for(const w of walls){ if(rectHit(tryX,w)) okX=false; if(rectHit(tryY,w)) okY=false; }
-      if(okX) P.x=nx;
-      if(okY) P.y=ny;
+
+  function allWalls(){ return levelWalls; }
+
+  function castRay(ox,oy,angle){
+    const dx=Math.cos(angle), dy=Math.sin(angle);
+    let t=0;
+    while(t<EC_MAX_DIST){
+      t+=EC_STEP*(t<2?0.5:t<10?2:8);
+      const rx=ox+dx*t, ry=oy+dy*t;
+      for(const w of allWalls()){
+        if(rx>=w.x&&rx<=w.x+w.w&&ry>=w.y&&ry<=w.y+w.h) return {dist:t,hit:true,wx:rx,wy:ry};
+      }
+      if(rx<0||rx>W||ry<0||ry>H) return {dist:t,hit:true,wx:rx,wy:ry};
     }
-    P.x=clamp(P.x,12,W-12);P.y=clamp(P.y,12,H-12);
+    return {dist:EC_MAX_DIST,hit:false};
   }
+
+  function moveP(dt){
+    if(keys['ArrowLeft']||keys['KeyA']) P.angle-=P.turnSpeed*dt;
+    if(keys['ArrowRight']||keys['KeyD']) P.angle+=P.turnSpeed*dt;
+    let mx=0;
+    if(keys['ArrowUp']||keys['KeyW']) mx=1;
+    if(keys['ArrowDown']||keys['KeyS']) mx=-1;
+    if(mx){
+      const nx=P.x+Math.cos(P.angle)*P.speed*mx*dt;
+      const ny=P.y+Math.sin(P.angle)*P.speed*mx*dt;
+      const pr=P.r;
+      let okX=true,okY=true;
+      for(const w of allWalls()){
+        if(nx-pr<w.x+w.w&&nx+pr>w.x&&P.y-pr<w.y+w.h&&P.y+pr>w.y) okX=false;
+        if(P.x-pr<w.x+w.w&&P.x+pr>w.x&&ny-pr<w.y+w.h&&ny+pr>w.y) okY=false;
+      }
+      if(okX) P.x=clamp(nx,12,W-12);
+      if(okY) P.y=clamp(ny,12,H-12);
+    }
+  }
+
   function tickPings(dt){
-    const walls=allWalls();
     for(let i=pings.length-1;i>=0;i--){
       const pg=pings[i];
       const pr=pg.r;
       pg.r+=PING_SPEED*dt; pg.age+=dt;
-      for(const w of walls){
-        for(const pt of wallPts(w)){
+      for(const w of allWalls()){
+        const pts=[];
+        for(let x=w.x;x<=w.x+w.w;x+=14) pts.push({x,y:w.y},{x,y:w.y+w.h});
+        for(let y=w.y;y<=w.y+w.h;y+=14) pts.push({x:w.x,y},{x:w.x+w.w,y});
+        for(const pt of pts){
           const d=Math.hypot(pt.x-pg.x,pt.y-pg.y);
           if(d>=pr&&d<pg.r) echoes.push({x:pt.x,y:pt.y,life:ECHO_LIFE,max:ECHO_LIFE});
         }
       }
-      for(const pt of exitPts()){
-        const d=Math.hypot(pt.x-pg.x,pt.y-pg.y);
-        if(d>=pr&&d<pg.r) echoes.push({x:pt.x,y:pt.y,life:ECHO_LIFE*2,max:ECHO_LIFE*2,exit:true});
+      const ex=exitPos.x,ey=exitPos.y;
+      for(let a=0;a<Math.PI*2;a+=0.3){
+        const px=ex+Math.cos(a)*22,py=ey+Math.sin(a)*22;
+        const d=Math.hypot(px-pg.x,py-pg.y);
+        if(d>=pr&&d<pg.r) echoes.push({x:px,y:py,life:ECHO_LIFE*1.8,max:ECHO_LIFE*1.8,exit:true});
       }
       if(pg.r>Math.hypot(W,H)) pings.splice(i,1);
     }
     for(let i=echoes.length-1;i>=0;i--){ echoes[i].life-=dt; if(echoes[i].life<=0) echoes.splice(i,1); }
     pingCd=Math.max(0,pingCd-dt);
   }
+
+  function echoIntensity(wx,wy){
+    let best=0;
+    for(const e of echoes){
+      if(e.exit) continue;
+      const d=Math.hypot(e.x-wx,e.y-wy);
+      if(d<20) best=Math.max(best,(e.life/e.max)*(1-d/20));
+    }
+    return best;
+  }
+
+  function drawFirstPerson(){
+    const skyGrad=ctx.createLinearGradient(0,0,0,H*0.5);
+    skyGrad.addColorStop(0,'#050510'); skyGrad.addColorStop(1,'#0a0a20');
+    ctx.fillStyle=skyGrad; ctx.fillRect(0,0,W,H*0.5);
+    const flrGrad=ctx.createLinearGradient(0,H*0.5,0,H);
+    flrGrad.addColorStop(0,'#080808'); flrGrad.addColorStop(1,'#030303');
+    ctx.fillStyle=flrGrad; ctx.fillRect(0,H*0.5,W,H*0.5);
+
+    const sliceW=W/EC_RAY_COUNT;
+    for(let i=0;i<EC_RAY_COUNT;i++){
+      const rayAngle=P.angle - EC_HALF_FOV + (i/EC_RAY_COUNT)*EC_FOV;
+      const {dist,hit,wx,wy}=castRay(P.x,P.y,rayAngle);
+      const corrDist=dist*Math.cos(rayAngle-P.angle);
+      const wallH=Math.min(H,FOV3D*120/Math.max(corrDist,1));
+      const top=(H-wallH)/2;
+      const fog=clamp(1-corrDist/500,0.05,1);
+      const echo=echoIntensity(wx||P.x,wy||P.y);
+      const r=Math.floor((30+echo*180)*fog);
+      const g2=Math.floor((80+echo*120)*fog);
+      const b=Math.floor((120+echo*60)*fog);
+      ctx.fillStyle=`rgb(${r},${g2},${b})`;
+      ctx.fillRect(Math.floor(i*sliceW),Math.floor(top),Math.ceil(sliceW)+1,Math.ceil(wallH));
+    }
+
+    // exit glow in world: project exit to screen
+    const relAngle=Math.atan2(exitPos.y-P.y,exitPos.x-P.x)-P.angle;
+    const normAngle=((relAngle+Math.PI*3)%(Math.PI*2))-Math.PI;
+    if(Math.abs(normAngle)<EC_HALF_FOV*1.1){
+      const exitDist=Math.hypot(exitPos.x-P.x,exitPos.y-P.y);
+      const sx=W/2+(normAngle/EC_FOV)*W;
+      const sz=Math.min(H,FOV3D*80/Math.max(exitDist,1));
+      const exitAlpha=clamp(1-exitDist/600,0.15,0.9);
+      const exitGrad=ctx.createRadialGradient(sx,H/2,0,sx,H/2,sz);
+      exitGrad.addColorStop(0,`rgba(0,255,100,${exitAlpha})`);
+      exitGrad.addColorStop(1,'rgba(0,255,100,0)');
+      ctx.fillStyle=exitGrad;
+      ctx.fillRect(sx-sz,H/2-sz,sz*2,sz*2);
+    }
+
+    // crosshair
+    ctx.strokeStyle='rgba(0,255,180,0.4)'; ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(W/2-8,H/2);ctx.lineTo(W/2+8,H/2);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(W/2,H/2-8);ctx.lineTo(W/2,H/2+8);ctx.stroke();
+  }
+
+  function drawMinimap(){
+    const S=0.065, mx=8, my=8, mw=W*S, mh=H*S;
+    ctx.globalAlpha=0.55;
+    drawRect(mx,my,mw,mh,'#050510');
+    for(const w of allWalls()){
+      drawRect(mx+w.x*S,my+w.y*S,w.w*S,w.h*S,'#2255aa');
+    }
+    ctx.globalAlpha=1;
+    // exit dot
+    ctx.fillStyle='#0f8';
+    ctx.beginPath();ctx.arc(mx+exitPos.x*S,my+exitPos.y*S,2.5,0,Math.PI*2);ctx.fill();
+    // player
+    ctx.fillStyle='#0ff';
+    ctx.beginPath();ctx.arc(mx+P.x*S,my+P.y*S,2,0,Math.PI*2);ctx.fill();
+    const dl=10*S;
+    ctx.strokeStyle='#0ff'; ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(mx+P.x*S,my+P.y*S);
+    ctx.lineTo(mx+P.x*S+Math.cos(P.angle)*dl,my+P.y*S+Math.sin(P.angle)*dl);
+    ctx.stroke();
+    // echo dots on minimap
+    for(const e of echoes){
+      ctx.globalAlpha=(e.life/e.max)*0.7;
+      ctx.fillStyle=e.exit?'#0f8':'#0af';
+      ctx.fillRect(mx+e.x*S-0.5,my+e.y*S-0.5,1,1);
+    }
+    ctx.globalAlpha=1;
+  }
+
   const LVLS=[
-    // L1: three walls, all gap at bottom — easy intro
-    {instr:'SPACE = PING. Walls echo. Find the green exit.',
-     start:{x:50,y:430},exit:{x:750,y:430},
+    {instr:'←→ TURN  ↑↓ MOVE  SPACE=PING  Find the glowing exit.',
+     start:{x:50,y:430},exit:{x:750,y:430},angle:0,
      walls:[{x:200,y:8,w:14,h:360},{x:400,y:8,w:14,h:360},{x:600,y:8,w:14,h:360}]},
-    // L2: three bottom gaps then one top gap, exit at top
-    {instr:'Follow the echo. The path zigzags.',
-     start:{x:50,y:430},exit:{x:750,y:50},
+    {instr:'The path zigzags. Listen to the echo.',
+     start:{x:50,y:430},exit:{x:750,y:50},angle:0,
      walls:[{x:180,y:8,w:14,h:360},{x:360,y:8,w:14,h:360},{x:540,y:8,w:14,h:360},{x:670,y:100,w:14,h:372}]},
-    // L3: alternating top/bottom gaps
     {instr:'Maze tightens. Read every ping.',
-     start:{x:50,y:430},exit:{x:750,y:430},
+     start:{x:50,y:430},exit:{x:750,y:430},angle:0,
      walls:[{x:200,y:8,w:14,h:340},{x:400,y:140,w:14,h:332},{x:600,y:8,w:14,h:340}]},
-    // L4: five walls zigzag
-    {instr:'Dense corridors. Listen carefully.',
-     start:{x:50,y:430},exit:{x:750,y:430},
+    {instr:'Dense corridors. Stay calm.',
+     start:{x:50,y:430},exit:{x:750,y:430},angle:0,
      walls:[{x:140,y:8,w:14,h:300},{x:280,y:180,w:14,h:292},{x:420,y:8,w:14,h:300},{x:560,y:180,w:14,h:292},{x:700,y:8,w:14,h:300}]},
-    // L5: wall pairs create middle corridor, one solid wall forces detour
-    {instr:'Final echo. Find the way.',
-     start:{x:50,y:240},exit:{x:750,y:240},
+    {instr:'Final corridor. Find the way out.',
+     start:{x:50,y:240},exit:{x:750,y:240},angle:0,
      walls:[
        {x:150,y:8,w:14,h:192},{x:150,y:280,w:14,h:192},
        {x:300,y:8,w:14,h:192},{x:300,y:280,w:14,h:192},
@@ -1386,42 +1535,24 @@ function makeEchoCity(){
   const game=new Game('ECHO CITY',LVLS.map(lv=>({
     instr:lv.instr,
     init(){
-      P.x=lv.start.x;P.y=lv.start.y;
+      P.x=lv.start.x;P.y=lv.start.y;P.angle=lv.angle||0;
       exitPos={x:lv.exit.x,y:lv.exit.y};
       levelWalls=lv.walls;
-      pings=[{x:P.x,y:P.y,r:0,age:0}]; // free reveal ping on start
+      pings=[{x:P.x,y:P.y,r:0,age:0}];
       echoes=[];pingCd=0;
     },
     update(g,dt){
       moveP(dt);
       if(consumeKey('Space')&&pingCd<=0){ pings.push({x:P.x,y:P.y,r:0,age:0}); pingCd=PING_CD; }
       tickPings(dt);
-      if(dist(P,exitPos)<EXIT_R+P.r) g.win();
+      if(Math.hypot(P.x-exitPos.x,P.y-exitPos.y)<30) g.win();
     },
     draw(){
-      for(const e of echoes){
-        const a=e.life/e.max;
-        if(e.exit){
-          ctx.fillStyle=`rgba(0,255,136,${a.toFixed(2)})`;
-          ctx.beginPath();ctx.arc(e.x,e.y,4,0,Math.PI*2);ctx.fill();
-        } else {
-          ctx.fillStyle=`rgba(0,180,255,${(a*0.75).toFixed(2)})`;
-          ctx.beginPath();ctx.arc(e.x,e.y,2,0,Math.PI*2);ctx.fill();
-        }
-      }
-      for(const pg of pings){
-        const a=Math.max(0,0.6-pg.r/500);
-        ctx.strokeStyle=`rgba(0,150,255,${a.toFixed(2)})`;
-        ctx.lineWidth=2;
-        ctx.beginPath();ctx.arc(pg.x,pg.y,pg.r,0,Math.PI*2);ctx.stroke();
-      }
-      ctx.fillStyle='rgba(0,255,255,0.18)';
-      ctx.beginPath();ctx.arc(P.x,P.y,P.r*2.5,0,Math.PI*2);ctx.fill();
-      ctx.fillStyle='#0ff';
-      ctx.beginPath();ctx.arc(P.x,P.y,P.r,0,Math.PI*2);ctx.fill();
-      drawRect(W-110,40,80,3,'#111');
-      drawRect(W-110,40,pingCd<=0?80:80*(1-pingCd/PING_CD),3,pingCd<=0?'#0f8':'#0cf');
-      text(pingCd<=0?'PING READY':'PING',W-70,46,{align:'center',size:9,color:pingCd<=0?'#0f8':'#444'});
+      drawFirstPerson();
+      drawMinimap();
+      drawRect(W-110,10,80,3,'#111');
+      drawRect(W-110,10,pingCd<=0?80:80*(1-pingCd/PING_CD),3,pingCd<=0?'#0f8':'#0cf');
+      text(pingCd<=0?'PING READY':'PING',W-70,16,{align:'center',size:9,color:pingCd<=0?'#0f8':'#444'});
     }
   })));
   return game;
@@ -1497,12 +1628,18 @@ function makeMemoryGrid(){
 }
 
 /* ===========================================================
-   GAME 7 — GRAVITY WELL
+   GAME 7 — GRAVITY WELL  (3D starfield + glow wells)
    =========================================================== */
 function makeGravityWell(){
   const p={x:0,y:0,vx:0,vy:0,r:8};
-  const THRUST=360,MAX_V=420;
+  const THRUST=400,MAX_V=500;
   let wells=[],exitPos={x:0,y:0},trail=[];
+  // 3D starfield: stars have z depth
+  const STAR_COUNT=120;
+  const stars=Array.from({length:STAR_COUNT},()=>({
+    x:(Math.random()-0.5)*1600, y:(Math.random()-0.5)*960,
+    z:50+Math.random()*600, vz:-(30+Math.random()*80)
+  }));
 
   function resetP(x,y){ p.x=x;p.y=y;p.vx=0;p.vy=0;trail=[]; }
 
@@ -1515,55 +1652,91 @@ function makeGravityWell(){
     for(const w of wells){
       const dx=w.x-p.x,dy=w.y-p.y,d2=dx*dx+dy*dy,d=Math.sqrt(d2)||1;
       if(d<w.r+p.r) return 'suck';
-      const f=w.str*9000/d2;
+      const f=w.str*10000/d2;
       ax+=dx/d*f; ay+=dy/d*f;
     }
-    p.vx=(p.vx+ax*dt)*0.993; p.vy=(p.vy+ay*dt)*0.993;
+    p.vx=(p.vx+ax*dt)*0.991; p.vy=(p.vy+ay*dt)*0.991;
     const spd=Math.hypot(p.vx,p.vy);
     if(spd>MAX_V){ p.vx=p.vx/spd*MAX_V; p.vy=p.vy/spd*MAX_V; }
     p.x+=p.vx*dt; p.y+=p.vy*dt;
     if(p.x<p.r||p.x>W-p.r||p.y<p.r||p.y>H-p.r) return 'bounds';
-    trail.push({x:p.x,y:p.y}); if(trail.length>50) trail.shift();
+    trail.push({x:p.x,y:p.y,spd}); if(trail.length>60) trail.shift();
     return null;
+  }
+
+  function tickStars(dt){
+    for(const s of stars){
+      s.z+=s.vz*dt;
+      if(s.z<=1){ s.z=650; s.x=(Math.random()-0.5)*1600; s.y=(Math.random()-0.5)*960; }
+    }
   }
 
   const CFG=[
     {sx:80,sy:240,ex:720,ey:240,wells:[{x:400,y:240,r:40,str:2.2}]},
-    {sx:80,sy:80,ex:720,ey:400,wells:[{x:300,y:240,r:35,str:2.4},{x:580,y:160,r:28,str:2}]},
-    {sx:80,sy:240,ex:720,ey:240,wells:[{x:270,y:150,r:30,str:3},{x:530,y:330,r:30,str:3}]},
-    {sx:80,sy:400,ex:720,ey:80,wells:[{x:240,y:300,r:32,str:2.5},{x:450,y:200,r:32,str:2.5},{x:640,y:310,r:28,str:2}]},
-    {sx:80,sy:240,ex:720,ey:240,wells:[{x:230,y:150,r:26,str:3},{x:400,y:330,r:26,str:3.2},{x:570,y:150,r:26,str:3},{x:660,y:340,r:24,str:2.5}]},
+    {sx:80,sy:80,ex:720,ey:400,wells:[{x:300,y:240,r:35,str:2.6},{x:580,y:160,r:28,str:2.2}]},
+    {sx:80,sy:240,ex:720,ey:240,wells:[{x:270,y:150,r:32,str:3.2},{x:530,y:330,r:32,str:3.2}]},
+    {sx:80,sy:400,ex:720,ey:80,wells:[{x:240,y:300,r:30,str:2.8},{x:450,y:200,r:30,str:2.8},{x:640,y:310,r:28,str:2.4}]},
+    {sx:80,sy:240,ex:720,ey:240,wells:[{x:230,y:150,r:26,str:3.2},{x:400,y:330,r:26,str:3.5},{x:570,y:150,r:26,str:3.2},{x:660,y:340,r:24,str:2.8}]},
   ];
 
   const game=new Game('GRAVITY WELL',CFG.map((cfg,i)=>({
-    instr:i===0?'ARROWS = thrust. Avoid the purple wells. Reach the yellow ring.':'Navigate the gravitational field.',
+    instr:i===0?'ARROWS = thrust. Avoid the vortex wells. Reach the yellow ring.':'Navigate the gravitational field.',
     init(){ resetP(cfg.sx,cfg.sy); wells=cfg.wells; exitPos={x:cfg.ex,y:cfg.ey}; },
     update(g,dt){
+      tickStars(dt);
       const res=stepPhysics(dt);
-      if(res==='suck') return g.fail('CONSUMED');
-      if(res==='bounds') return g.fail('OUT OF BOUNDS');
-      if(Math.hypot(p.x-exitPos.x,p.y-exitPos.y)<p.r+20) g.win();
+      if(res==='suck'){ spawnParticles(p.x,p.y,20,'#f0f',260,0.8,4); return g.fail('CONSUMED'); }
+      if(res==='bounds'){ spawnParticles(p.x,p.y,12,'#f80',200,0.5,3); return g.fail('OUT OF BOUNDS'); }
+      if(Math.hypot(p.x-exitPos.x,p.y-exitPos.y)<p.r+22){ spawnParticles(exitPos.x,exitPos.y,25,'#ff0',220,0.9,4); g.win(); }
     },
     draw(){
-      for(let j=0;j<trail.length;j++){
-        const a=((j/trail.length)*0.5).toFixed(2);
-        ctx.fillStyle=`rgba(255,100,0,${a})`;
-        ctx.fillRect(trail[j].x-1,trail[j].y-1,2,2);
+      // starfield
+      for(const s of stars){
+        const {sx,sy,scale}=project3D(s.x,s.y,s.z);
+        const sr=clamp(scale*2,0.3,3);
+        const bright=clamp(1-s.z/700,0.1,1);
+        ctx.globalAlpha=bright;
+        ctx.fillStyle='#fff';
+        ctx.fillRect(sx-sr/2,sy-sr/2,sr,sr);
       }
+      ctx.globalAlpha=1;
+      // well glow fields
       for(const w of wells){
-        ctx.fillStyle='rgba(255,0,255,0.1)';
-        ctx.beginPath();ctx.arc(w.x,w.y,w.r*3,0,Math.PI*2);ctx.fill();
-        ctx.fillStyle='#f0f';
-        ctx.beginPath();ctx.arc(w.x,w.y,w.r,0,Math.PI*2);ctx.fill();
+        const pullR=w.r*5;
+        const wg=ctx.createRadialGradient(w.x,w.y,0,w.x,w.y,pullR);
+        wg.addColorStop(0,'rgba(160,0,255,0.22)');
+        wg.addColorStop(0.5,'rgba(80,0,160,0.10)');
+        wg.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.fillStyle=wg;
+        ctx.beginPath();ctx.arc(w.x,w.y,pullR,0,Math.PI*2);ctx.fill();
+        glowCircle(w.x,w.y,w.r,'#b000ff',w.r*2.2);
         drawRect(w.x-3,w.y-3,6,6,'#000');
       }
-      ctx.strokeStyle='#ff0';ctx.lineWidth=2;
-      ctx.beginPath();ctx.arc(exitPos.x,exitPos.y,20,0,Math.PI*2);ctx.stroke();
-      text('EXIT',exitPos.x,exitPos.y-30,{align:'center',size:10,color:'#ff0'});
-      ctx.fillStyle='#f80';
-      ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+      // trail
+      for(let j=1;j<trail.length;j++){
+        const a=(j/trail.length)*0.7;
+        const spd=trail[j].spd||0;
+        const hot=spd>MAX_V*0.6;
+        ctx.globalAlpha=a;
+        ctx.fillStyle=hot?'#ff6000':'#ff3000';
+        ctx.fillRect(trail[j].x-1,trail[j].y-1,2,2);
+      }
+      ctx.globalAlpha=1;
+      // exit ring
+      ctx.shadowColor='#ff0'; ctx.shadowBlur=14;
+      ctx.strokeStyle='#ff0';ctx.lineWidth=2.5;
+      ctx.beginPath();ctx.arc(exitPos.x,exitPos.y,22,0,Math.PI*2);ctx.stroke();
+      ctx.shadowBlur=0;
+      text('EXIT',exitPos.x,exitPos.y-32,{align:'center',size:10,color:'#ff0'});
+      // player
+      glowCircle(p.x,p.y,p.r,'#f80',p.r*2.5);
       const thr=keys['ArrowLeft']||keys['ArrowRight']||keys['ArrowUp']||keys['ArrowDown']||keys['KeyA']||keys['KeyD']||keys['KeyW']||keys['KeyS'];
-      if(thr){ctx.strokeStyle='rgba(255,200,0,0.7)';ctx.lineWidth=3;ctx.beginPath();ctx.arc(p.x,p.y,p.r+6,0,Math.PI*2);ctx.stroke();}
+      if(thr){
+        ctx.shadowColor='#ffc000'; ctx.shadowBlur=10;
+        ctx.strokeStyle='rgba(255,200,0,0.8)';ctx.lineWidth=2.5;
+        ctx.beginPath();ctx.arc(p.x,p.y,p.r+7,0,Math.PI*2);ctx.stroke();
+        ctx.shadowBlur=0;
+      }
     }
   })));
   return game;
@@ -1730,20 +1903,25 @@ function makeBlockPusher(){
 }
 
 /* ===========================================================
-   GAME 10 — REFLEX CHAIN
+   GAME 10 — REFLEX CHAIN  (3D tunnel + depth targets)
    =========================================================== */
 function makeReflexChain(){
-  const p={x:W/2,y:H/2,r:8,speed:320};
+  const p={x:W/2,y:H/2,r:9,speed:360};
   let targets=[],chain=0,chainLen=0,curLv=0;
   const CHAIN_LEN=[5,6,7,9,12];
-  const TIME_PER=[3.0,2.5,2.0,1.6,1.3];
+  const TIME_PER=[3.2,2.7,2.2,1.8,1.4];
+  // tunnel rings
+  const RING_COUNT=12;
+  let tunnelT=0;
 
   function spawnTarget(){
-    return {
-      x:clamp(70+Math.random()*(W-140),70,W-70),
-      y:clamp(70+Math.random()*(H-140),70,H-70),
-      r:22,life:TIME_PER[curLv],max:TIME_PER[curLv],n:chain+1
-    };
+    const depth=0.3+Math.random()*0.5; // 0.3..0.8 depth factor (0=near 1=far)
+    const wz=80+depth*400;
+    const wx=(Math.random()-0.5)*(W*0.55);
+    const wy=(Math.random()-0.5)*(H*0.55);
+    const {sx,sy,scale}=project3D(wx,wy,wz);
+    const r=clamp(22*scale,8,28);
+    return {wx,wy,wz,x:sx,y:sy,r,life:TIME_PER[curLv],max:TIME_PER[curLv],n:chain+1,depth};
   }
 
   function moveP(dt){
@@ -1756,18 +1934,45 @@ function makeReflexChain(){
     p.x=clamp(p.x,10,W-10); p.y=clamp(p.y,10,H-10);
   }
 
+  function drawTunnel(t){
+    for(let i=0;i<RING_COUNT;i++){
+      const frac=((i/RING_COUNT)+t*0.15)%1;
+      const wz=30+frac*700;
+      const scale=FOV3D/wz;
+      const rw=(W*0.48)*scale, rh=(H*0.48)*scale;
+      const bright=Math.floor((1-frac)*80);
+      ctx.strokeStyle=`rgb(0,${bright},${bright+20})`;
+      ctx.lineWidth=1;
+      ctx.strokeRect(W/2-rw,H/2-rh,rw*2,rh*2);
+      if(i>0){
+        // connect corners to previous ring
+        const frac2=((i-1)/RING_COUNT+t*0.15)%1;
+        const wz2=30+frac2*700;
+        const scale2=FOV3D/wz2;
+        const rw2=(W*0.48)*scale2, rh2=(H*0.48)*scale2;
+        ctx.strokeStyle=`rgba(0,${bright},${bright},0.2)`;
+        ctx.beginPath();ctx.moveTo(W/2-rw,H/2-rh);ctx.lineTo(W/2-rw2,H/2-rh2);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(W/2+rw,H/2-rh);ctx.lineTo(W/2+rw2,H/2-rh2);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(W/2-rw,H/2+rh);ctx.lineTo(W/2-rw2,H/2+rh2);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(W/2+rw,H/2+rh);ctx.lineTo(W/2+rw2,H/2+rh2);ctx.stroke();
+      }
+    }
+  }
+
   const game=new Game('REFLEX CHAIN',CHAIN_LEN.map((clen,i)=>({
-    instr:i===0?'Move to each numbered target before it expires. In order!':'Faster. Keep the chain going.',
+    instr:i===0?'Move to each numbered target in order before it expires!':'Faster. Deeper. Keep the chain.',
     init(){
-      p.x=W/2;p.y=H/2; curLv=i; chain=0; chainLen=clen;
+      p.x=W/2;p.y=H/2; curLv=i; chain=0; chainLen=clen; tunnelT=0;
       targets=[spawnTarget()];
     },
     update(g,dt){
+      tunnelT+=dt;
       moveP(dt);
       if(targets.length){
         targets[0].life-=dt;
         if(targets[0].life<=0) return g.fail('TIMED OUT');
         if(Math.hypot(p.x-targets[0].x,p.y-targets[0].y)<p.r+targets[0].r){
+          spawnParticles(targets[0].x,targets[0].y,12,'#0ff',160,0.5,3);
           chain++; targets.shift();
           if(chain>=chainLen) g.win();
           else targets.push(spawnTarget());
@@ -1775,22 +1980,238 @@ function makeReflexChain(){
       }
     },
     draw(){
+      drawTunnel(tunnelT);
       if(targets.length){
         const t=targets[0];
         const frac=t.life/t.max;
+        // depth glow ring behind target
+        const glow=ctx.createRadialGradient(t.x,t.y,0,t.x,t.y,t.r*2.5);
+        glow.addColorStop(0,`rgba(255,${Math.floor(frac*200)},0,0.25)`);
+        glow.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.fillStyle=glow;
+        ctx.beginPath();ctx.arc(t.x,t.y,t.r*2.5,0,Math.PI*2);ctx.fill();
+        // timer arc
+        ctx.shadowColor=`rgb(255,${Math.floor(frac*200)},0)`; ctx.shadowBlur=6;
         ctx.strokeStyle=`rgb(255,${Math.floor(frac*220)},0)`;ctx.lineWidth=3;
         ctx.beginPath();ctx.arc(t.x,t.y,t.r,0,Math.PI*2);ctx.stroke();
-        ctx.strokeStyle='rgba(255,255,0,0.25)';ctx.lineWidth=7;
-        ctx.beginPath();ctx.arc(t.x,t.y,t.r+10,-Math.PI/2,-Math.PI/2+frac*Math.PI*2);ctx.stroke();
-        text(''+t.n,t.x,t.y,{align:'center',baseline:'middle',size:20,color:'#fff'});
-        ctx.strokeStyle='rgba(0,255,255,0.12)';ctx.lineWidth=1;
+        ctx.shadowBlur=0;
+        ctx.strokeStyle='rgba(255,255,0,0.3)';ctx.lineWidth=6;
+        ctx.beginPath();ctx.arc(t.x,t.y,t.r+8,-Math.PI/2,-Math.PI/2+frac*Math.PI*2);ctx.stroke();
+        text(''+t.n,t.x,t.y,{align:'center',baseline:'middle',size:Math.floor(16*clamp(1.2-t.depth,0.6,1.4)),color:'#fff'});
+        // guide line
+        ctx.strokeStyle='rgba(0,255,255,0.15)';ctx.lineWidth=1;
+        ctx.setLineDash([4,6]);
         ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(t.x,t.y);ctx.stroke();
+        ctx.setLineDash([]);
       }
-      ctx.fillStyle='#0f0';
-      ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();
+      // player
+      glowCircle(p.x,p.y,p.r,'#0f0',p.r*2.2);
+      ctx.shadowColor='#0ff'; ctx.shadowBlur=8;
       ctx.strokeStyle='#0ff';ctx.lineWidth=2;
-      ctx.beginPath();ctx.arc(p.x,p.y,p.r+4,0,Math.PI*2);ctx.stroke();
+      ctx.beginPath();ctx.arc(p.x,p.y,p.r+5,0,Math.PI*2);ctx.stroke();
+      ctx.shadowBlur=0;
       text(chain+'/'+chainLen,W/2,10,{align:'center',size:14,color:'#0f0'});
+    }
+  })));
+  return game;
+}
+
+/* ===========================================================
+   GAME 11 — TORPEDO RUN  (periscope first-person naval battle)
+   =========================================================== */
+function makeNavalBattle(){
+  const HORIZ_Y=H*0.48;
+  const NAVAL_FOV=380;
+  let ships=[], torpedoes=[], sunk=0, quota=0, reloadCd=0, reloadMax=1.8;
+  let aimX=W/2, fogDensity=0, waveT=0;
+  let stars=Array.from({length:55},()=>({x:Math.random()*W,y:Math.random()*HORIZ_Y*0.9,b:0.3+Math.random()*0.7}));
+
+  function spawnShip(cfg){
+    const side=Math.random()<0.5?-1:1;
+    const wz=180+Math.random()*400;
+    const wx=side*(300+Math.random()*500);
+    const sp=(30+Math.random()*50)*(Math.random()<0.5?1:-1);
+    ships.push({wx,wz,vx:sp,hp:2,maxHp:2,worldW:cfg.worldW||160});
+  }
+
+  function projectShip(s){
+    const sx=W/2+(s.wx/s.wz)*NAVAL_FOV;
+    const scale=NAVAL_FOV/s.wz;
+    const screenW=s.worldW*scale;
+    return {sx,scale,screenW};
+  }
+
+  function drawOcean(t){
+    // sky gradient
+    const skyG=ctx.createLinearGradient(0,0,0,HORIZ_Y);
+    skyG.addColorStop(0,'#02030f'); skyG.addColorStop(0.7,'#061530'); skyG.addColorStop(1,'#0a2040');
+    ctx.fillStyle=skyG; ctx.fillRect(0,0,W,HORIZ_Y);
+    // stars
+    for(const s of stars){
+      ctx.globalAlpha=s.b*(0.7+Math.sin(t+s.x)*0.3);
+      ctx.fillStyle='#fff';
+      ctx.fillRect(s.x,s.y,1,1);
+    }
+    ctx.globalAlpha=1;
+    // horizon glow
+    const hg=ctx.createLinearGradient(0,HORIZ_Y-18,0,HORIZ_Y+18);
+    hg.addColorStop(0,'rgba(0,80,180,0)'); hg.addColorStop(0.5,'rgba(0,120,220,0.25)'); hg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=hg; ctx.fillRect(0,HORIZ_Y-18,W,36);
+    // water scanlines
+    for(let y=HORIZ_Y;y<H;y++){
+      const depth=(y-HORIZ_Y)/(H-HORIZ_Y);
+      const wave=Math.sin(t*0.9+y*0.06)*2*depth;
+      const spec=Math.sin(t*1.4+y*0.13+20)*depth*0.5;
+      const base=Math.floor(depth*30);
+      const r=base; const g2=Math.floor(depth*70+spec*40); const b2=Math.floor(80+depth*80+spec*60);
+      ctx.fillStyle=`rgb(${r},${g2},${b2})`;
+      ctx.fillRect(wave,y,W,1);
+    }
+  }
+
+  function drawShips(fogD){
+    const sorted=[...ships].sort((a,b)=>b.wz-a.wz);
+    for(const s of sorted){
+      const {sx,scale,screenW}=projectShip(s);
+      if(sx<-screenW||sx>W+screenW) continue;
+      const sh=screenW*0.28;
+      const sy=HORIZ_Y - sh*0.5;
+      // fog overlay based on depth
+      const fog=clamp(s.wz/800*fogD,0,0.92);
+      // hull
+      ctx.fillStyle=`rgba(20,40,60,${(1-fog).toFixed(2)})`;
+      ctx.beginPath();
+      ctx.ellipse(sx,sy,screenW*0.5,sh*0.4,0,0,Math.PI*2);
+      ctx.fill();
+      // superstructure
+      ctx.fillStyle=`rgba(30,55,80,${(1-fog).toFixed(2)})`;
+      ctx.fillRect(sx-screenW*0.15,sy-sh*0.8,screenW*0.3,sh*0.8);
+      // mast
+      ctx.strokeStyle=`rgba(80,110,140,${(1-fog).toFixed(2)})`; ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(sx,sy-sh*0.8);ctx.lineTo(sx,sy-sh*1.6);ctx.stroke();
+      // HP dots
+      for(let h=0;h<s.maxHp;h++){
+        ctx.fillStyle=h<s.hp?`rgba(0,220,60,${(1-fog).toFixed(2)})`:`rgba(80,80,80,${(1-fog).toFixed(2)})`;
+        ctx.beginPath();ctx.arc(sx-((s.maxHp-1)*5)+(h*10),sy-sh*2,3,0,Math.PI*2);ctx.fill();
+      }
+      if(fog>0.05){
+        ctx.fillStyle=`rgba(2,8,20,${fog.toFixed(2)})`;
+        ctx.fillRect(sx-screenW,sy-sh*2,screenW*2,sh*3);
+      }
+    }
+  }
+
+  function drawTorpedoes(){
+    for(const t of torpedoes){
+      ctx.shadowColor='#0ff'; ctx.shadowBlur=8;
+      ctx.fillStyle='#0ff';
+      ctx.beginPath();ctx.ellipse(t.x,t.sy,3,8,0,0,Math.PI*2);ctx.fill();
+      ctx.shadowBlur=0;
+      ctx.globalAlpha=0.4;
+      ctx.fillStyle='rgba(0,200,255,0.3)';
+      ctx.fillRect(t.x-1,t.sy,2,H-t.sy);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  function drawReticle(aim){
+    ctx.strokeStyle='rgba(0,255,200,0.5)'; ctx.lineWidth=1;
+    ctx.setLineDash([4,6]);
+    ctx.beginPath();ctx.moveTo(aim,HORIZ_Y-40);ctx.lineTo(aim,HORIZ_Y+40);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(aim-30,HORIZ_Y);ctx.lineTo(aim+30,HORIZ_Y);ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle='rgba(0,255,200,0.3)'; ctx.lineWidth=1;
+    ctx.beginPath();ctx.arc(aim,HORIZ_Y,18,0,Math.PI*2);ctx.stroke();
+  }
+
+  function drawPeriscopeFrame(){
+    const vg=ctx.createRadialGradient(W/2,H/2,H*0.38,W/2,H/2,H*0.72);
+    vg.addColorStop(0,'rgba(0,0,0,0)');
+    vg.addColorStop(0.7,'rgba(0,0,0,0.55)');
+    vg.addColorStop(1,'rgba(0,0,0,0.97)');
+    ctx.fillStyle=vg; ctx.beginPath();ctx.arc(W/2,H/2,H*0.72,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='rgba(0,200,140,0.4)'; ctx.lineWidth=3;
+    ctx.beginPath();ctx.arc(W/2,H/2,H*0.46,0,Math.PI*2);ctx.stroke();
+    // crosshair lines from edge
+    ctx.strokeStyle='rgba(0,200,140,0.2)'; ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(W/2-H*0.46,H/2);ctx.lineTo(W/2-H*0.3,H/2);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(W/2+H*0.3,H/2);ctx.lineTo(W/2+H*0.46,H/2);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(W/2,H/2-H*0.46);ctx.lineTo(W/2,H/2-H*0.3);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(W/2,H/2+H*0.3);ctx.lineTo(W/2,H/2+H*0.46);ctx.stroke();
+  }
+
+  const CFGS=[
+    {quota:3,reloadMax:1.8,fogD:0,worldW:160,shipCount:4,spd:35},
+    {quota:5,reloadMax:1.5,fogD:0.15,worldW:140,shipCount:5,spd:45},
+    {quota:7,reloadMax:1.2,fogD:0.30,worldW:130,shipCount:6,spd:55},
+    {quota:6,reloadMax:1.0,fogD:0.45,worldW:120,shipCount:8,spd:65},
+    {quota:10,reloadMax:0.85,fogD:0.60,worldW:110,shipCount:10,spd:75},
+  ];
+
+  const game=new Game('TORPEDO RUN',CFGS.map((cfg,i)=>({
+    instr:i===0?'← → AIM   SPACE FIRE   Sink '+cfg.quota+' ships.':'Sink '+cfg.quota+'. Fog thickens. Stay sharp.',
+    init(){
+      ships=[]; torpedoes=[]; sunk=0; quota=cfg.quota;
+      reloadCd=0; reloadMax=cfg.reloadMax; fogDensity=cfg.fogD;
+      aimX=W/2; waveT=0;
+      for(let k=0;k<cfg.shipCount;k++) spawnShip(cfg);
+    },
+    update(g,dt){
+      waveT+=dt;
+      if(keys['ArrowLeft']||keys['KeyA']) aimX=clamp(aimX-260*dt,40,W-40);
+      if(keys['ArrowRight']||keys['KeyD']) aimX=clamp(aimX+260*dt,40,W-40);
+      reloadCd=Math.max(0,reloadCd-dt);
+      if(consumeKey('Space')&&reloadCd<=0){
+        torpedoes.push({x:aimX,sy:HORIZ_Y+80,vy:-620});
+        reloadCd=reloadMax;
+      }
+      // move ships
+      for(const s of ships){
+        s.wx+=s.vx*dt;
+        // bounce at edges
+        const {sx}=projectShip(s);
+        if(sx<-60) s.vx=Math.abs(s.vx);
+        if(sx>W+60) s.vx=-Math.abs(s.vx);
+      }
+      // move torpedoes
+      for(let ti=torpedoes.length-1;ti>=0;ti--){
+        const t=torpedoes[ti];
+        t.sy+=t.vy*dt;
+        if(t.sy<=HORIZ_Y){
+          // hit detection: check each ship
+          let hit=false;
+          for(let si=ships.length-1;si>=0;si--){
+            const s=ships[si];
+            const {sx,screenW}=projectShip(s);
+            if(Math.abs(t.x-sx)<screenW*0.45){
+              s.hp--;
+              spawnParticles(t.x,HORIZ_Y,16,'#f80',200,0.7,4);
+              spawnParticles(t.x,HORIZ_Y,8,'#ff0',280,0.5,3);
+              if(s.hp<=0){
+                spawnParticles(sx,HORIZ_Y,24,'#f44',240,0.9,5);
+                ships.splice(si,1); sunk++;
+                if(sunk>=quota){ g.win(); return; }
+                spawnShip(cfg);
+              }
+              hit=true; break;
+            }
+          }
+          torpedoes.splice(ti,1);
+          if(!hit) spawnParticles(t.x,HORIZ_Y+5,5,'#0cf',80,0.3,2);
+        }
+      }
+    },
+    draw(){
+      drawOcean(waveT);
+      drawShips(fogDensity);
+      drawTorpedoes();
+      drawReticle(aimX);
+      drawPeriscopeFrame();
+      // HUD
+      drawRect(20,H-32,100,4,'#111');
+      drawRect(20,H-32,reloadCd<=0?100:100*(1-reloadCd/reloadMax),4,reloadCd<=0?'#0ff':'#066');
+      text(reloadCd<=0?'FIRE READY':'RELOADING',70,H-44,{align:'center',size:9,color:reloadCd<=0?'#0ff':'#444'});
+      text('SUNK: '+sunk+'/'+quota,W/2,14,{align:'center',size:14,color:'#0cf'});
     }
   })));
   return game;
@@ -1808,6 +2229,7 @@ const GAMES = {
   snake:   makeNeonSnake,
   pusher:  makeBlockPusher,
   reflex:  makeReflexChain,
+  naval:   makeNavalBattle,
 };
 
 /* ---------- Init ---------- */
